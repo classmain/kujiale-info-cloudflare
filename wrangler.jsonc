@@ -2,7 +2,7 @@
   // Cloudflare Workers 项目配置 333
   // 文档: https://developers.cloudflare.com/workers/wrangler/configuration/
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "kujiale-info-cloudflare",
+  "name": "kujiale-info-cloudflare-222",
   "main": "src/index.js",
   "compatibility_date": "2025-03-01",
 
