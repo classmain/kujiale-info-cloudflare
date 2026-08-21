@@ -1,1 +1,68 @@
 
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>方案查询</title>
+  <style>
+    *{box-sizing: border-box;margin:0;padding:0;font-family:system-ui}
+    body{background:#f5f7fa;padding:40px 20px;}
+    .box{max-width:420px;margin:0 auto;background:#fff;padding:32px 24px;border-radius:12px;box-shadow:0 2px 12px #00000014}
+    h2{text-align:center;margin-bottom:28px;color:#222}
+    .inp{width:100%;padding:14px 16px;font-size:16px;border:1px solid #ddd;border-radius:8px;margin-bottom:20px;outline:none}
+    .inp:focus{border-color:#07c160}
+    .btn{width:100%;padding:14px;background:#07c160;color:#fff;border:none;border-radius:8px;font-size:17px}
+    .tip{font-size:13px;color:#888;margin-top:12px}
+    .version-text{max-width:420px;margin:16px auto 0;text-align:center;font-size:12px;color:#aaaaaa;}
+  </style>
+</head>
+<body>
+<div class="box">
+  <h2>一酷家乐方案信息一</h2>
+  <input class="inp" id="idInput" placeholder="粘贴酷家乐链接或者直接输入方案ID">
+  <button class="btn" onclick="goQuery()">立即查询</button>
+  <div class="tip">支持酷家乐show/evaluate链接，会自动提取方案ID</div>
+</div>
+<div class="version-text">版本：<span id="verText"></span></div>
+
+<script>
+const APP_VERSION = "1.0.24‑smart‑scale";
+document.getElementById('verText').innerText = APP_VERSION;
+
+// 从链接提取方案ID，兼容 /design/xxx/show 和 /pcenter/design/xxx/evaluate
+function parsePlanId(inputStr){
+  if(!inputStr) return '';
+  const str = inputStr.trim();
+  // 兼容两种路径：/design/ID/show  和 /pcenter/design/ID/evaluate
+  const reg = /(design|pcenter\/design)\/([A-Z0-9]+)\//;
+  const match = str.match(reg);
+  if(match && match[2]){
+    return match[2].trim();
+  }
+  // 判断输入本身就是方案ID（大写字母+数字）
+  const idReg = /^[A-Z0-9]+$/;
+  if(idReg.test(str)){
+    return str;
+  }
+  // 提取失败，返回空
+  return '';
+}
+
+function goQuery(){
+  const val = document.getElementById('idInput').value.trim()
+  if(!val){
+    alert('请输入方案ID或者酷家乐链接')
+    return
+  }
+  const planId = parsePlanId(val);
+  if(!planId){
+    alert("没有方案ID，不是酷家乐效果图！");
+    return;
+  }
+  // 跳转到详情页
+  window.location.href = `detail.html?id=${encodeURIComponent(planId)}`
+}
+</script>
+</body>
+</html>
