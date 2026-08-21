@@ -1,0 +1,629 @@
+<!--   业务流程梳理
+【页面加载】
+    │
+    ├─ getUrlParam() 读取url中的id参数
+    │    ├─ 无id：页面提示“未获取到方案ID”结束
+    │    └─ 有id：fetch请求后端 /api/query?id=xxx
+    │         ├─ 请求失败：页面展示网络异常
+    │         └─ 请求成功拿到酷家乐JSON数据
+    │              └─ renderPage()渲染页面
+    │                   ├─ 分割楼层：有全景图/无全景图
+    │                   ├─ 渲染页面：方案信息、面积切换单选框、楼层表格、折叠面板
+    │                   └─ 表格缩略图绑定 onclick="openBigImg()"
+
+【用户点击户型缩略图】
+    │
+    └─ openBigImg() → autoGenShot()【截图核心async函数】
+         ├─ isShotting锁判断：正在截图直接return，防止并发
+         ├─ 打开弹窗，清空旧图片
+         ├─ 给屏幕外截图模板DOM设置图片src、拼接标题文字（包含用户选择的套内/建筑面积）
+         ├─ 判断DPR：手机设备标题字号24px，PC设备20px
+         ├─ await 等待图片onload加载完成（图片没加载完截图空白）
+         ├─ sleep(150)等待浏览器重绘布局
+         ├─ 智能scale = Math.max(1.5, Math.min(dpr,2.0))
+         ├─ html2canvas渲染屏幕外DOM生成canvas
+         ├─ canvas导出 jpeg 0.92 → base64图片
+         ├─ base64赋值弹窗图片，用户弹窗预览，手机长按保存图片
+         ├─ catch捕获异常：提示截图失败，关闭弹窗
+         └─ finally释放 isShotting锁，可以进行下一次截图
+
+【关闭弹窗两种方式】
+    ├─ 点击弹窗黑色遮罩背景
+    └─ PC键盘ESC按键
+         └─ closeShotMask()：隐藏弹窗，清空img.src释放图片内存
+
+【套内/建筑面积切换】
+    └─ 用户切换单选框 → showAreaType更新，存入localStorage持久化，下次截图标题使用对应面积
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<!-- 移动端视口，禁止缩放 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>方案详情</title>
+<!-- html2canvas锁定1.4.1稳定版，新版本存在渲染bug，不要升级 -->
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<style>
+/* ======================全局样式重置====================== */
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui}
+body{background:#f5f7fa;padding:16px 12px;}
+
+/* 页面主容器，最大宽度740px，居中 */
+.container{max-width:740px;margin:0 auto;background:#fff;padding:20px 16px;border-radius:12px}
+.back{display:inline-block;margin-bottom:16px;color:#07c160;text-decoration:none;font-size:16px}
+.info-block{margin-bottom:12px;font-size:15px;line-height:1.8}
+.info-block div{margin:4px 0;}
+
+/* 套内/建筑面积切换区域 */
+.area-switch-wrap{
+  margin-bottom:16px;
+  padding:10px 12px;
+  background:#f8f8f8;
+  border-radius:6px;
+}
+.switch-label{
+  margin-right:18px;
+  font-size:15px;
+  cursor:pointer;
+}
+
+/* 楼层表格样式 */
+table{width:100%;border-collapse:collapse;font-size:14px;margin:8px 0 16px;}
+th,td{border:1px solid #aaa;padding:8px 6px;text-align:left;}
+th{background:#f0f0f0;}
+.total-row{font-weight:bold;background:#f7f7f7;}
+.tip-text{color:#888;font-size:12px;margin:6px 0 14px;}
+
+/* 表格内户型缩略图，点击触发截图 */
+.thumb-img{
+  width:80px;
+  height:70px;
+  object-fit:cover;
+  border-radius:4px;
+  cursor:pointer;
+  border:1px solid #ccc;
+}
+.no-pic{
+  color:#999;font-size:12px;
+}
+
+/* ======================截图模板DOM【重点】======================
+关键点：不能使用 display:none；html2canvas对display:none的DOM渲染空白
+方案：fixed定位，left:-9999px移出可视视口，用户看不见，专门用来做截图渲染源
+pointer-events:none 屏蔽鼠标事件，不会干扰页面交互
+*/
+#imgModal{
+  position:fixed;
+  left:-9999px;
+  top:0;
+  pointer-events:none;
+}
+/* 截图根容器固定宽度840px，固定宽度截图输出稳定，不要百分比 */
+.modal-wrap{
+  background:#ffffff;
+  border-radius:8px;
+  width:840px;
+  overflow:hidden;
+}
+/* 截图图片顶部标题栏 */
+.modal-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:14px 16px;
+  border-bottom:1px solid #eee;
+  gap:8px;
+  background:#f7f7f7;
+}
+.modal-title{
+  flex:1;
+  text-align:center;
+  font-size:20px;
+  font-weight:bold;
+  color:#e53935; /* 红色标题 */
+}
+/* 截图内图片容器，图片居中 */
+.modal-img-container{
+  padding:12px;
+  background:#ffffff;
+  overflow:auto;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.modal-img{
+  max-width:100%;
+  border:1px solid #ccc;
+}
+
+/* ======================截图预览弹窗（用户可见）======================
+修复：PC端图片过大，设置max‑width、max‑height限制弹窗图片尺寸
+*/
+.shot-mask{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.88);
+  z-index:10000;
+  display:none; /* 默认隐藏 */
+  align-items:center;
+  justify-content:center;
+  padding:16px;
+}
+.shot-inner{
+  max-width:100%;
+}
+.shot-tip{
+  color:#fff;
+  text-align:center;
+  margin-bottom:10px;
+  font-size:14px;
+}
+.shot-img{
+  max-width:85vw;
+  max-height:82vh;
+  border-radius:6px;
+}
+
+/* 无图楼层折叠面板 */
+.collapse-wrap{margin-top:12px;}
+.collapse-btn{
+  width:100%;
+  text-align:left;
+  padding:10px 12px;
+  background:#eeeeee;
+  border:none;
+  border-radius:6px;
+  font-size:14px;
+  cursor:pointer;
+}
+.collapse-content{
+  display:none;
+  margin-top:8px;
+}
+
+.version-text{max-width:740px;margin:16px auto 0;text-align:center;font-size:12px;color:#aaaaaa;}
+
+/* loading旋转动画 */
+.loading{
+  padding:30px;
+  text-align:center;
+  color:#666;
+  font-size:16px;
+}
+.spinner{
+  width:40px;
+  height:40px;
+  margin:0 auto 12px;
+  border:3px solid #e5e5e5;
+  border-top:3px solid #07c160;
+  border-radius:50%;
+  animation:spin 0.8s linear infinite;
+}
+@keyframes spin{
+  0%{transform:rotate(0deg)}
+  100%{transform:rotate(360deg)}
+}
+
+/* 手机页面布局适配（页面本身，不是截图内的内容） */
+@media (max-width:480px){
+  .container{padding:16px 12px;}
+  table{font-size:12px;}
+  th,td{padding:6px 4px;}
+  .thumb-img{width:70px;height:61px;}
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <a class="back" href="./index_h5.html">← 返回输入页面</a>
+  <div id="pageBody">
+    <div class="loading">
+      <div class="spinner"></div>
+      加载中...
+    </div>
+  </div>
+</div>
+<div class="version-text">版本：<span id="verText"></span></div>
+
+<!--
+截图模板DOM（屏幕外，用户不可见）
+业务逻辑：点击缩略图后JS动态赋值图片src、标题文本
+html2canvas读取这个DOM渲染成图片
+decoding="async" 图片异步解码，优化大图加载性能
+-->
+<div id="imgModal">
+  <div class="modal-wrap" id="modalWrapDom">
+    <div class="modal-header">
+      <div></div>
+      <div class="modal-title" id="modalTitle">户型图预览</div>
+      <div></div>
+    </div>
+    <div class="modal-img-container">
+      <img id="modalImage" class="modal-img" alt="户型大图" decoding="async">
+    </div>
+  </div>
+</div>
+
+<!-- 用户可见弹窗：生成截图后展示，手机长按保存转发微信 -->
+<div id="shotMask" class="shot-mask">
+  <div class="shot-inner">
+    <div class="shot-tip">✅ 长按下方图片可保存/转发微信</div>
+    <img id="shotImage" class="shot-img" alt="截图">
+  </div>
+</div>
+
+<script>
+// 当前版本号
+const APP_VERSION = "1.0.25‑fix‑ui";
+document.getElementById('verText').innerText = APP_VERSION;
+
+// ======================DOM缓存：只查询一次DOM，提升性能======================
+const modalWrapDom = document.getElementById('modalWrapDom');   // 截图根容器DOM
+const modalImage = document.getElementById('modalImage');         // 截图模板内户型图片
+const modalTitleDom = document.getElementById('modalTitle');     // 截图模板标题元素
+
+const shotMask = document.getElementById('shotMask'); // 弹窗遮罩容器
+const shotImage = document.getElementById('shotImage');// 弹窗展示生成完成的截图
+
+// ======================本地存储：记住用户选择套内/建筑面积======================
+// real = 套内面积；build = 建筑面积
+let showAreaType = localStorage.getItem("showAreaType") || "real";
+
+// ======================截图并发锁：防止用户连续多次点击，并发执行html2canvas导致页面卡死======================
+let isShotting = false;
+
+/**
+ * closeShotMask 关闭截图弹窗，释放图片内存
+ * 业务关键点：img.src置空，释放大图内存，否则多次截图后内存持续上涨页面卡顿
+ */
+function closeShotMask(){
+  shotMask.style.display = 'none';
+  shotImage.src = "";
+  modalImage.src = "";
+}
+
+/**
+ * autoGenShot 【核心截图业务函数 async异步】
+ * @param {string} url 户型图片地址
+ * @param {string} planName 方案名称
+ * @param {string} levelName 楼层名称
+ * @param {number} realArea 套内面积
+ * @param {number} buildArea 建筑面积
+ *
+ * 执行流程：
+ * 1. 判断截图锁，如果正在截图直接return，拒绝重复调用
+ * 2. 打开弹窗，清空旧图片资源
+ * 3. 给屏幕外模板DOM设置图片src、拼接标题文字
+ * 4. 根据设备DPR动态设置截图内标题字号：手机DPR≥2设置24px，PC保持20px（修复手机截图标题字太小）
+ * 5. Promise等待图片完全加载完毕；图片未加载完成截图会空白
+ * 6. sleep短暂延时，给浏览器完成布局重绘时间，兼容部分机型onload之后DOM未刷新完成
+ * 7. 智能scale计算：下限1.5保证PC普通屏清晰度；上限2.0，限制3倍手机不要生成超大画布
+ * 8. html2canvas渲染屏幕外DOM得到canvas画布
+ * 9. canvas导出jpeg base64，质量0.92平衡画质与体积
+ * 10. base64赋值弹窗图片展示给用户
+ * 11. catch捕获全部异常，弹窗提示；finally无论成功失败释放截图锁
+ */
+async function autoGenShot(url, planName, levelName, realArea, buildArea){
+  if(isShotting) return;
+
+  try{
+    isShotting = true;
+    shotMask.style.display = 'flex';
+    shotImage.src = "";
+
+    // 清除旧事件回调，防止多次截图事件堆积错乱
+    modalImage.onload = null;
+    modalImage.onerror = null;
+    modalImage.src = url;
+
+    // 拼接截图顶部标题文字
+    let titleParts = [];
+    if(planName) titleParts.push(planName);
+    if(levelName) titleParts.push(levelName);
+    if(showAreaType === "real"){
+      if(realArea !== undefined && realArea!==null){
+        titleParts.push(`套内面积：${formatNum(realArea)}㎡`);
+      }
+    }else{
+      if(buildArea !== undefined && buildArea!==null){
+        titleParts.push(`建筑面积：${formatNum(buildArea)}㎡`);
+      }
+    }
+    modalTitleDom.innerText = titleParts.length>0 ? titleParts.join("｜") : "户型图预览";
+
+    // =========修复手机截图内部红色标题过小=========
+    const dpr = window.devicePixelRatio || 1;
+    if(dpr >= 2){
+      modalTitleDom.style.fontSize = "24px";
+    }else{
+      modalTitleDom.style.fontSize = "20px";
+    }
+
+    // Promise等待图片加载完成
+    await new Promise((resolve,reject)=>{
+      if(modalImage.complete){
+        resolve(true);
+      }else{
+        modalImage.onload = ()=>resolve(true);
+        modalImage.onerror = ()=>reject('图片加载失败');
+      }
+    });
+
+    // 等待浏览器渲染布局完成
+    await sleep(150);
+
+    // =========智能scale计算=========
+    // Math.max(1.5,xxx)：PC普通DPR=1，scale最低1.5防止截图模糊
+    // Math.min(dpr,2.0)：限制最大scale为2，避免3倍手机生成超大图片，微信分享体积巨大
+    const scale = Math.max(1.5, Math.min(dpr, 2.0));
+
+    // html2canvas配置项说明
+    // useCORS:true 开启跨域图片支持；图片服务器必须配置CORS，否则图片渲染空白
+    // logging:false 关闭控制台大量调试日志
+    // removeContainer:true 渲染结束自动清理内部临时DOM，释放内存
+    const canvas = await html2canvas(modalWrapDom,{
+      useCORS: true,
+      scale: scale,
+      logging: false,
+      backgroundColor: null,
+      removeContainer: true
+    });
+
+    // 输出jpeg，0.92画质；png体积巨大，只在需要透明背景时使用png
+    const base64 = canvas.toDataURL("image/jpeg",0.92);
+    shotImage.src = base64;
+
+  }catch(err){
+    console.error("生成分享图失败",err);
+    alert("截图生成失败，请重试");
+    closeShotMask();
+  }finally{
+    // 无论成功失败，释放截图锁，允许下一次截图
+    isShotting = false;
+  }
+}
+
+/**
+ * sleep Promise版延时工具
+ * @param {number} ms 毫秒
+ */
+function sleep(ms){
+  return new Promise(resolve=>setTimeout(resolve,ms));
+}
+
+/**
+ * openBigImg 页面onclick对外暴露入口
+ * @param {string} url 图片地址
+ * @param {string} planName 方案名
+ * @param {string} levelName 楼层
+ * @param {number} realArea 套内面积
+ * @param {number} buildArea 建筑面积
+ */
+function openBigImg(url, planName, levelName, realArea, buildArea){
+  if(!url) return;
+  autoGenShot(url, planName, levelName, realArea, buildArea);
+}
+window.openBigImg = openBigImg;
+
+// =====================弹窗交互事件=====================
+// 点击遮罩背景关闭弹窗；点击图片本身不关闭
+shotMask.addEventListener('click',(e)=>{
+  if(e.target === shotMask){
+    closeShotMask();
+  }
+})
+// PC键盘ESC按键关闭弹窗
+document.addEventListener('keydown',(e)=>{
+  if(e.key === 'Escape'){
+    closeShotMask();
+  }
+})
+
+/**
+ * formatNum 数字格式化，统一保留2位小数
+ * @param {*} val 原始数值
+ * @returns {string}
+ */
+function formatNum(val){
+  const num = Number(val);
+  if(isNaN(num)) return val;
+  return num.toFixed(2);
+}
+
+/**
+ * toggleCollapse 折叠面板开关：无图楼层展开收起
+ */
+function toggleCollapse(){
+  const contentDom = document.getElementById('collapseContent');
+  const btnDom = document.getElementById('collapseBtn');
+  if(contentDom.style.display === 'block'){
+    contentDom.style.display = 'none';
+    btnDom.innerText = '▶ 点击展开：不参与面积合计的楼层';
+  }else{
+    contentDom.style.display = 'block';
+    btnDom.innerText = '▼ 点击收起：不参与面积合计的楼层';
+  }
+}
+window.toggleCollapse = toggleCollapse;
+
+/**
+ * renderPage 渲染页面主体HTML
+ * @param {Object} dataObj 后端返回酷家乐方案JSON
+ * @param {string} idFromUrl url参数id
+ *
+ * 业务逻辑：
+ * 1. 将楼层分成两组：
+ *    renderFloorList：存在panoramaUrl，主表格展示，支持点击截图
+ *    noPicFloorList：无panoramaUrl，放入折叠面板
+ * 2. 拼接HTML字符串，渲染页面DOM
+ * 3. 绑定套内/建筑面积单选框切换事件，修改后存入localStorage持久化
+ */
+function renderPage(dataObj, idFromUrl){
+  const d = dataObj;
+  const panoramaLink = `https://www.kujiale.com/design/${idFromUrl}/show`;
+
+  let renderFloorList = [];
+  let noPicFloorList = [];
+
+  if(Array.isArray(d.floors)){
+    d.floors.forEach(item=>{
+      if(item.panoramaUrl){
+        renderFloorList.push(item);
+      }else{
+        noPicFloorList.push(item);
+      }
+    })
+  }
+
+  // 拼接页面HTML
+  let html = `
+  <div class="info-block">
+    <div>名称：${d.name||''}</div>
+    <div>作者：${d.userName||''}</div>
+    <div>日期：${d.modifiedTime||''}</div>
+    <div>方案ID：${idFromUrl||''}</div>
+    <div>3D全景效果图：<a href="${panoramaLink}" target="_blank">${panoramaLink}</a></div>
+  </div>
+
+  <div class="area-switch-wrap">
+    <label class="switch-label">
+      <input type="radio" name="areaType" value="real" ${showAreaType==="real"?"checked":""}> 套内面积
+    </label>
+    <label class="switch-label">
+      <input type="radio" name="areaType" value="build" ${showAreaType==="build"?"checked":""}> 建筑面积
+    </label>
+  </div>
+
+  <div class="tip-text">提示：没有合成到3D全景效果图里的楼层  不参与合计面积统计</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>楼层</th>
+        <th>建筑面积</th>
+        <th>套内面积</th>
+        <th>户型图</th>
+      </tr>
+    </thead>
+    <tbody>
+  `;
+
+  // 主表格楼层，缩略图绑定onclick触发截图入口
+  renderFloorList.forEach(item=>{
+    let picHtml = `<img class="thumb-img" src="${item.panoramaUrl}" onclick="openBigImg('${item.panoramaUrl}','${d.name||''}','${item.levelName||''}',${item.realArea??0},${item.area??0})" alt="${item.levelName}户型图">`;
+    html += `
+    <tr>
+      <td>${item.levelName||''}</td>
+      <td>${formatNum(item.area)}</td>
+      <td>${formatNum(item.realArea)}</td>
+      <td>${picHtml}</td>
+    </tr>
+    `
+  })
+
+  html += `
+    <tr class="total-row">
+      <td>合计:</td>
+      <td>${formatNum(d.totalArea)}</td>
+      <td>${formatNum(d.totalRealArea)}</td>
+      <td></td>
+    </tr>
+    </tbody>
+  </table>
+  `;
+
+  // 渲染无全景楼层折叠面板
+  if(noPicFloorList.length >0){
+    html += `
+    <div class="collapse-wrap">
+      <button id="collapseBtn" class="collapse-btn" onclick="toggleCollapse()">▶ 点击展开：不参与面积合计的楼层</button>
+      <div id="collapseContent" class="collapse-content">
+        <table>
+          <thead>
+            <tr>
+              <th>楼层</th>
+              <th>建筑面积</th>
+              <th>套内面积</th>
+              <th>户型图(planImage)</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+    noPicFloorList.forEach(item=>{
+      let imgHtml = '';
+      if(item.planImage){
+        imgHtml = `<img class="thumb-img" src="${item.planImage}" onclick="openBigImg('${item.planImage}','${d.name||''}','${item.levelName||''}',${item.realArea??0},${item.area??0})" alt="${item.levelName}平面图">`;
+      }else{
+        imgHtml = `<span class="no-pic">无图</span>`;
+      }
+      html += `
+      <tr>
+        <td>${item.levelName||''}</td>
+        <td>${formatNum(item.area)}</td>
+        <td>${formatNum(item.realArea)}</td>
+        <td>${imgHtml}</td>
+      </tr>
+      `
+    })
+    html += `
+          </tbody>
+        </table>
+      </div>
+    </div>
+    `
+  }
+
+  pageBody.innerHTML = html;
+
+  // 单选框切换事件，保存用户选择到localStorage
+  document.querySelectorAll('input[name="areaType"]').forEach(radio=>{
+    radio.onchange = function(){
+      showAreaType = this.value;
+      localStorage.setItem("showAreaType", showAreaType);
+    }
+  })
+}
+
+/**
+ * getUrlParam 获取url查询参数
+ * @param {string} name 参数名
+ * @returns {string|null}
+ */
+function getUrlParam(name){
+  let reg = new RegExp("(^|&)"+ name +"=([^&]*)(&|$)");
+  let r = window.location.search.substr(1).match(reg);
+  if(r!=null)return decodeURIComponent(r[2]); return null;
+}
+
+// =====================页面初始化入口=====================
+const id = getUrlParam('id');
+const pageBody = document.getElementById('pageBody');
+
+if(!id){
+  pageBody.innerText = "未获取到方案ID";
+}else{
+  // 请求后端接口获取酷家乐方案数据
+  fetch(`/api/query?id=${encodeURIComponent(id)}`)
+  .then(res=>{
+    if(!res.ok){
+      throw new Error("接口请求异常 "+res.status);
+    }
+    return res.json();
+  })
+  .then(ret=>{
+    if(ret.code!==0){
+      pageBody.innerText = ret.msg;
+      return;
+    }
+    window._rawData = ret.data;
+    renderPage(ret.data, id);
+  })
+  .catch(err=>{
+    pageBody.innerText = "网络请求出错："+err.message;
+    console.error(err);
+  })
+}
+</script>
+</body>
+</html>
