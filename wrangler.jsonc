@@ -6,7 +6,7 @@
   "main": "src/index.js",
   "compatibility_date": "2025-03-01",
 
-  // 静态资源(HTML 文件)配置
+  // 静态资源(HTML 文件) 配置
   // Workers 会先匹配 public 目录下的静态文件,匹配不到的请求才进 Worker
   "assets": {
     "directory": "./public",
