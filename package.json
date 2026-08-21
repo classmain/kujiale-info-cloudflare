@@ -1,0 +1,15 @@
+{
+  "name": "kujiale-query-cf",
+  "version": "1.0.0-cf",
+  "private": true,
+  "description": "酷家乐方案查询应用，从微信云托管迁移到 Cloudflare Workers",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

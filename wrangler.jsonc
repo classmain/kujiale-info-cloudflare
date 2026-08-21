@@ -1,0 +1,22 @@
+{
+  // Cloudflare Workers 项目配置
+  // 文档: https://developers.cloudflare.com/workers/wrangler/configuration/
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kujiale-query",
+  "main": "src/index.js",
+  "compatibility_date": "2025-03-01",
+
+  // 静态资源（HTML 文件）配置
+  // Workers 会先匹配 public 目录下的静态文件，匹配不到的请求才进 Worker
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // 未命中静态资源时不做 SPA 回退，交给 Worker 处理 /api 与 /
+    "not_found_handling": "none"
+  },
+
+  // 观测性（日志），按需开启
+  "observability": {
+    "enabled": true
+  }
+}
